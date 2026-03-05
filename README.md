@@ -102,15 +102,15 @@ Download both files from the [Steinegger lab AFDB cluster page](https://afdb-clu
 ```bash
 mkdir -p data
 # Download these two files into data/:
-#   File 7: 7-AFDB50-repId_memId.tsv.gz               (1.2 GB) — sequence clusters (50% identity)
-#   File 1: 1-AFDBClusters-entryId_repId_taxId.tsv.gz  (262 MB) — structural clusters (Foldseek)
+#   File 7: 7-AFDB50-repId_memId.tsv.gz                    (1.2 GB) — sequence clusters (50% identity)
+#   File 5: 5-allmembers-repId-entryId-cluFlag-taxId.tsv.gz (1.6 GB) — all members with cluster flags
 ```
 
 The pipeline uses **both** cluster types:
-- **Sequence clusters (AFDB50)** — groups proteins at 50% sequence identity
-- **Structural clusters (Foldseek)** — groups proteins by 3D fold similarity, which is stricter (two proteins with low sequence identity can share a fold)
+- **Sequence clusters (AFDB50, file 7)** — groups proteins at 50% sequence identity
+- **Structural clusters (file 5, cluFlag=2)** — groups proteins by 3D fold similarity, which is stricter (two proteins with low sequence identity can share a fold). Only the ~30M entries with `cluFlag=2` (structurally clustered) are loaded; fragments, singletons, and sequence-only entries are excluded.
 
-Split assignment is based on the **structural** clusters, so proteins with similar folds always land in the same split. An entry must appear in both files to be included.
+Split assignment is based on the **structural** clusters, so proteins with similar folds always land in the same split. An entry must appear in both files to be included — this yields ~30M eligible entries.
 
 ### Stage 1: Build the Manifest
 

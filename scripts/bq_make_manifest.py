@@ -28,7 +28,7 @@ def main(config_path: str, output_dir: str | None, limit: int | None):
     if not cfg.cluster_files.structural_rep_mem_tsv_gz:
         raise click.ClickException(
             "cluster_files.structural_rep_mem_tsv_gz must be set in config. "
-            "Download 1-AFDBClusters-entryId_repId_taxId.tsv.gz from "
+            "Download 5-allmembers-repId-entryId-cluFlag-taxId.tsv.gz from "
             "https://afdb-cluster.steineggerlab.workers.dev/"
         )
 

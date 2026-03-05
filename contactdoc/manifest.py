@@ -27,8 +27,9 @@ def enrich_entries(
     dropped = 0
     for entry in entries:
         entry_id = entry["entryId"]
-        seq_cluster_id = get_cluster_id(entry_id, seq_cluster_map)
-        struct_cluster_id = get_cluster_id(entry_id, struct_cluster_map)
+        accession = entry["uniprotAccession"]
+        seq_cluster_id = get_cluster_id(accession, seq_cluster_map)
+        struct_cluster_id = get_cluster_id(accession, struct_cluster_map)
         if seq_cluster_id is None or struct_cluster_id is None:
             dropped += 1
             continue
