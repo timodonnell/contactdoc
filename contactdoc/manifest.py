@@ -10,17 +10,31 @@ from .splits import assign_split
 
 def enrich_entries(
     entries: list[dict],
-    cluster_map: dict[str, str] | None,
+    seq_cluster_map: dict[str, str],
+    struct_cluster_map: dict[str, str],
     cfg: PipelineConfig,
-) -> list[dict]:
-    """Attach split_cluster_id, split, and gcs_uri to each entry."""
+) -> tuple[list[dict], int]:
+    """Attach cluster IDs, split, and gcs_uri to each entry.
+
+    An entry must be present in BOTH the sequence (AFDB50) and structural
+    cluster maps to be included. Entries missing from either are dropped.
+    Split assignment uses the structural cluster (stricter grouping), so
+    proteins with similar folds always land in the same split.
+
+    Returns (enriched_entries, num_dropped).
+    """
     enriched = []
+    dropped = 0
     for entry in entries:
         entry_id = entry["entryId"]
-        cluster_id = get_cluster_id(entry_id, cluster_map)
+        seq_cluster_id = get_cluster_id(entry_id, seq_cluster_map)
+        struct_cluster_id = get_cluster_id(entry_id, struct_cluster_map)
+        if seq_cluster_id is None or struct_cluster_id is None:
+            dropped += 1
+            continue
         split = assign_split(
             cfg.splits.seed,
-            cluster_id,
+            struct_cluster_id,
             cfg.splits.train_frac,
             cfg.splits.val_frac,
         )
@@ -28,11 +42,13 @@ def enrich_entries(
 
         enriched.append({
             **entry,
-            "split_cluster_id": cluster_id,
+            "seq_cluster_id": seq_cluster_id,
+            "struct_cluster_id": struct_cluster_id,
+            "split_cluster_id": struct_cluster_id,
             "split": split,
             "gcs_uri": gcs_uri,
         })
-    return enriched
+    return enriched, dropped
 
 
 def write_manifest_shards(

@@ -26,8 +26,8 @@ splits:
   test_frac: 0.01
 
 cluster_files:
-  afdb50_rep_mem_tsv_gz: ""
-  structural_rep_mem_tsv_gz: ""
+  afdb50_rep_mem_tsv_gz: "data/7-AFDB50-repId_memId.tsv.gz"
+  structural_rep_mem_tsv_gz: "data/1-AFDBClusters-entryId_repId_taxId.tsv.gz"
 
 parallelism:
   shard_size_entries: 50

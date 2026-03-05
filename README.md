@@ -91,7 +91,26 @@ gcloud storage ls gs://public-datasets-deepmind-alphafold-v4/AF-P01308-F1-*
 
 ## Generating a Large Document Corpus
 
-The pipeline runs in two stages: **manifest building** (BigQuery selection) and **shard processing** (CIF download + parsing + serialization).
+The pipeline runs in three steps: **download cluster data**, **build manifest** (BigQuery selection), and **process shards** (CIF download + parsing + serialization).
+
+### Step 0: Download the Cluster Files
+
+Both cluster files are **required** — only entries present in both are included in the corpus. This ensures every entry has proper cluster assignments for leakage-resistant train/val/test splits (no singleton fallbacks).
+
+Download both files from the [Steinegger lab AFDB cluster page](https://afdb-cluster.steineggerlab.workers.dev/) (Version 3, which covers AFDB v4 entries):
+
+```bash
+mkdir -p data
+# Download these two files into data/:
+#   File 7: 7-AFDB50-repId_memId.tsv.gz               (1.2 GB) — sequence clusters (50% identity)
+#   File 1: 1-AFDBClusters-entryId_repId_taxId.tsv.gz  (262 MB) — structural clusters (Foldseek)
+```
+
+The pipeline uses **both** cluster types:
+- **Sequence clusters (AFDB50)** — groups proteins at 50% sequence identity
+- **Structural clusters (Foldseek)** — groups proteins by 3D fold similarity, which is stricter (two proteins with low sequence identity can share a fold)
+
+Split assignment is based on the **structural** clusters, so proteins with similar folds always land in the same split. An entry must appear in both files to be included.
 
 ### Stage 1: Build the Manifest
 
@@ -108,8 +127,9 @@ With the default config this selects all AFDB v4 entries that are:
 - Global mean pLDDT >= 70
 - Sequence length <= 2048
 - Single polymer chain
+- Present in both cluster files (AFDB50 + structural)
 
-This produces JSONL manifest shards in `output/manifests/`, each containing up to 2000 entries. Each entry includes the GCS URI, metadata, cluster ID, and train/val/test split assignment.
+Entries from BigQuery that are missing from either cluster file are dropped (count logged in the output). This produces JSONL manifest shards in `output/manifests/`, each containing up to 2000 entries with GCS URI, metadata, cluster IDs, and train/val/test split assignment.
 
 To test with a smaller set first:
 
@@ -168,19 +188,11 @@ output/results/
 - **metadata.jsonl.gz** — per-document metadata (entry ID, pLDDT, contact count, split, SHA1 of document text, etc.)
 - **errors.jsonl.gz** — entries that were skipped (parse failures, no contacts after filtering, etc.)
 
-### Using Cluster Files for Leakage-Resistant Splits
+### Cluster-Based Splits
 
-By default, entries without a cluster mapping fall back to singleton clusters (each entry is its own cluster). For proper leakage-resistant splits, download the Foldseek AFDB50 cluster file and point the config at it:
+The pipeline **requires** both precomputed cluster files for split assignment. Entries not found in either file are excluded from the corpus entirely — there is no fallback to singleton clusters. This guarantees clean train/val/test splits with no leakage between structurally or sequence-similar proteins.
 
-1. Download from https://cluster.foldseek.com/ (the AFDB50 representative/member TSV.GZ)
-2. Update `config/default.yaml`:
-
-```yaml
-cluster_files:
-  afdb50_rep_mem_tsv_gz: "/path/to/AFDB50_rep_mem.tsv.gz"
-```
-
-All members of the same sequence cluster are guaranteed to land in the same split.
+Split assignment uses the structural cluster representative as the hash key, so all proteins sharing a fold land in the same split. The default config expects both files in `data/` (see Step 0).
 
 ## Configuration
 
