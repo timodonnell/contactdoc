@@ -194,6 +194,86 @@ The pipeline **requires** both precomputed cluster files for split assignment. E
 
 Split assignment uses the structural cluster representative as the hash key, so all proteins sharing a fold land in the same split. The default config expects both files in `data/` (see Step 0).
 
+### Stage 3: Tokenize into HuggingFace Arrow Dataset
+
+Convert the sharded text output into a pre-tokenized HuggingFace datasets Arrow format for efficient random-access during training:
+
+```bash
+uv run python scripts/build_dataset.py \
+  --input-dir output/results \
+  --output-dir output/dataset \
+  --max-contacts-ratio 1.0
+```
+
+`--max-contacts-ratio` limits the number of contacts per document to a multiple of the sequence length (e.g. `1.0` means at most `seq_len` contacts). When truncated, the `<end_contacts>` and `<end>` tokens are omitted so the model learns to generate contacts until the context window is full. Omit the flag to keep all contacts.
+
+The output is one directory per split, each a HuggingFace `Dataset` with columns: `input_ids` (list[int]), `entry_id`, `seq_len`, `contacts_emitted`, `global_plddt`.
+
+To inspect decoded documents:
+
+```bash
+uv run python scripts/view_dataset.py --dataset-dir output/dataset/train --random 3
+```
+
+### Retrying Failed Shards
+
+If shard processing is interrupted (e.g. GCP auth expires), you can retry only the failed shards without redoing successful ones:
+
+```bash
+# Retry from a specific shard index onward
+uv run python scripts/run_local.py \
+  --config config/default.yaml \
+  --manifest-dir output/manifests \
+  --output-dir output/results \
+  --use-gcs --workers 32 \
+  --retry-from 3296
+
+# Or retry specific shard indices listed in a file (one per line)
+uv run python scripts/run_local.py \
+  --config config/default.yaml \
+  --manifest-dir output/manifests \
+  --output-dir output/results \
+  --use-gcs --workers 32 \
+  --retry-list failed_shards.txt
+```
+
+## Reproducing the v1 Corpus (~24M documents)
+
+The commands below reproduce the full corpus on a machine with >=64GB RAM (for cluster maps) and GCP access.
+
+```bash
+# 0. Download cluster files into data/
+#    File 7: 7-AFDB50-repId_memId.tsv.gz                    (1.2 GB)
+#    File 5: 5-allmembers-repId-entryId-cluFlag-taxId.tsv.gz (1.6 GB)
+#    From: https://afdb-cluster.steineggerlab.workers.dev/ (Version 3)
+
+# 1. Authenticate with GCP
+gcloud auth application-default login
+
+# 2. Build manifest (streams ~178M BigQuery rows, keeps ~24M with cluster membership)
+#    Takes ~5 hours. Requires ~41GB RAM for cluster maps.
+uv run python scripts/bq_make_manifest.py \
+  --config config/default.yaml \
+  --output-dir /data/tim/contactdoc/manifests
+
+# 3. Process all shards (download CIFs from GCS, parse, compute contacts, serialize)
+#    Takes ~18-40 hours depending on network speed. GCP auth may expire mid-run.
+uv run python scripts/run_local.py \
+  --config config/default.yaml \
+  --manifest-dir /data/tim/contactdoc/manifests \
+  --output-dir /data/tim/contactdoc/results \
+  --use-gcs \
+  --workers 32
+
+# 4. Tokenize into Arrow dataset (contacts capped at 1x sequence length)
+uv run python scripts/build_dataset.py \
+  --input-dir /data/tim/contactdoc/results \
+  --output-dir /data/tim/contactdoc/dataset \
+  --max-contacts-ratio 1.0
+```
+
+**Note:** GCP application-default credentials expire after ~1 hour of inactivity or ~12 hours total. If shard processing fails partway through due to auth expiry, re-authenticate and use `--retry-list` or `--retry-from` to resume (see above).
+
 ## Configuration
 
 All pipeline behavior is controlled by a YAML config file. See `config/default.yaml` for the full set of options:
