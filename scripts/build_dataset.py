@@ -21,7 +21,44 @@ import datasets
 from contactdoc.tokenizer import encode, VOCAB_SIZE
 
 
-def _iter_shard_rows(txt_gz_path: Path, meta_gz_path: Path):
+def _truncate_contacts(doc_text: str, max_contacts: int) -> tuple[str, int]:
+    """Truncate contacts section to at most max_contacts lines.
+
+    When truncated, the trailing <end_contacts> and <end> tokens are omitted
+    so the model learns to generate contacts until the context window is full.
+
+    Returns (truncated_text, actual_contact_count).
+    """
+    lines = doc_text.strip().split("\n")
+    out = []
+    contact_count = 0
+    total_contacts = 0
+    in_contacts = False
+    truncated = False
+    for line in lines:
+        if line.strip() == "<begin_contacts>":
+            in_contacts = True
+            out.append(line)
+        elif line.strip() == "<end_contacts>":
+            in_contacts = False
+            if not truncated:
+                out.append(line)
+        elif line.strip() == "<end>":
+            if not truncated:
+                out.append(line)
+        elif in_contacts:
+            total_contacts += 1
+            if contact_count < max_contacts:
+                out.append(line)
+                contact_count += 1
+            if total_contacts > max_contacts:
+                truncated = True
+        else:
+            out.append(line)
+    return "\n".join(out) + "\n", contact_count
+
+
+def _iter_shard_rows(txt_gz_path: Path, meta_gz_path: Path, max_contacts_ratio: float | None = None):
     """Yield tokenized rows from one shard, streaming docs one at a time."""
     with gzip.open(meta_gz_path, "rt") as mf:
         meta_records = []
@@ -40,20 +77,25 @@ def _iter_shard_rows(txt_gz_path: Path, meta_gz_path: Path):
                 current = []
                 meta = meta_records[doc_idx]
                 doc_idx += 1
+                seq_len = meta["seq_len"]
+                contacts_emitted = meta["contacts_emitted"]
+                if max_contacts_ratio is not None:
+                    max_contacts = int(max_contacts_ratio * seq_len)
+                    doc_text, contacts_emitted = _truncate_contacts(doc_text, max_contacts)
                 yield {
                     "input_ids": encode(doc_text),
                     "entry_id": meta["entryId"],
-                    "seq_len": meta["seq_len"],
-                    "contacts_emitted": meta["contacts_emitted"],
+                    "seq_len": seq_len,
+                    "contacts_emitted": contacts_emitted,
                     "global_plddt": meta["globalMetricValue_mean_pLDDT"],
                 }
 
 
-def _make_split_generator(txt_files, meta_files):
+def _make_split_generator(txt_files, meta_files, max_contacts_ratio: float | None = None):
     """Return a generator function (not a generator) for Dataset.from_generator."""
     def gen():
         for txt_gz, meta_gz in zip(txt_files, meta_files):
-            yield from _iter_shard_rows(txt_gz, meta_gz)
+            yield from _iter_shard_rows(txt_gz, meta_gz, max_contacts_ratio)
     return gen
 
 
@@ -61,11 +103,14 @@ def _make_split_generator(txt_files, meta_files):
 @click.option("--input-dir", required=True, help="Directory with split=*/shard=*.txt.gz output")
 @click.option("--output-dir", required=True, help="Directory to write HF datasets (one subdir per split)")
 @click.option("--num-proc", default=1, type=int, help="Parallel workers for Arrow writing")
-def main(input_dir: str, output_dir: str, num_proc: int):
+@click.option("--max-contacts-ratio", default=None, type=float, help="Limit contacts to ratio * seq_len (e.g. 1.0)")
+def main(input_dir: str, output_dir: str, num_proc: int, max_contacts_ratio: float | None):
     input_path = Path(input_dir)
     output_path = Path(output_dir)
 
     click.echo(f"Vocab size: {VOCAB_SIZE}")
+    if max_contacts_ratio is not None:
+        click.echo(f"Max contacts ratio: {max_contacts_ratio}x seq_len")
 
     features = datasets.Features({
         "input_ids": datasets.Sequence(datasets.Value("int32")),
@@ -85,7 +130,7 @@ def main(input_dir: str, output_dir: str, num_proc: int):
 
         click.echo(f"Processing split={split_name}: {len(txt_files)} shards")
 
-        gen_fn = _make_split_generator(txt_files, meta_files)
+        gen_fn = _make_split_generator(txt_files, meta_files, max_contacts_ratio)
         ds = datasets.Dataset.from_generator(gen_fn, features=features)
 
         split_output = output_path / split_name
