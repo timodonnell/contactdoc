@@ -5,6 +5,7 @@ Generate LLM training documents from [AlphaFold Database](https://alphafold.ebi.
 Example output document:
 
 ```
+<deterministic-positives-only>
 <begin_sequence>
 <MET> <LYS> <PHE> <CYS> <ASP> <TYR> <GLY> <LEU>
 <begin_contacts>
@@ -15,6 +16,8 @@ Example output document:
 <end_contacts>
 <end>
 ```
+
+Each document begins with a **task token** identifying the generation scheme. Documents in a shard are separated by `<end_of_document>`. Multiple generation schemes can be added via the plugin architecture (see `contactdoc/generators/`).
 
 Contacts are heavy-atom pairs within a distance cutoff (default 4.0 A), one per residue pair, sorted by decreasing sequence separation. Leakage-resistant train/val/test splits are enforced using precomputed sequence-similarity clusters (Foldseek AFDB50).
 
@@ -181,19 +184,25 @@ uv run python scripts/run_local.py \
   --config config/default.yaml \
   --parquet-dir output/parquet \
   --output-dir output/results \
-  --workers 32
+  --scheme deterministic-positives-only \
+  --workers 32 \
+  --skip-existing
 ```
 
-This parses CIF content from Parquet, computes contacts, and writes gzipped output shards. Much faster than the original pipeline since there's no network I/O.
+The `--scheme` flag selects the document generation scheme (required). Each scheme is implemented as a generator plugin in `contactdoc/generators/`. The output is written to a subdirectory named after the scheme (e.g. `output/results/deterministic-positives-only/`).
 
-To process a single Parquet shard (useful for debugging):
+Input parquet shards are grouped 10:1 into output shards — every 10 input shards produce 1 output shard. The parquet directory is searched recursively, so subdirectories are supported.
+
+To process specific input shards into a single output shard (useful for debugging):
 
 ```bash
 uv run python scripts/generate_docs.py \
   --config config/default.yaml \
   --parquet-shard output/parquet/shard_000000.parquet \
+  --parquet-shard output/parquet/shard_000001.parquet \
   --shard-index 0 \
-  --output-dir output/results
+  --output-dir output/results/deterministic-positives-only \
+  --scheme deterministic-positives-only
 ```
 
 ### Output Structure
@@ -214,7 +223,7 @@ output/results/
     ...
 ```
 
-- **txt.gz** — concatenated documents, each ending with `<end>\n`
+- **txt.gz** — concatenated documents, each ending with `<end>\n`, separated by `<end_of_document>\n`
 - **metadata.jsonl.gz** — per-document metadata (entry ID, pLDDT, contact count, split, SHA1 of document text, etc.)
 - **errors.jsonl.gz** — entries that were skipped (parse failures, no contacts after filtering, etc.)
 
@@ -280,6 +289,29 @@ uv run python scripts/run_local.py \
   --retry-list failed_shards.txt
 ```
 
+### Uploading Parquet Dataset to HuggingFace
+
+To share the Parquet dataset (the CIF cache with metadata and splits), first generate a manifest and then upload:
+
+```bash
+# Generate manifest with per-shard statistics
+uv run python scripts/make_parquet_manifest.py \
+  --parquet-dir output/parquet \
+  --output output/parquet/manifest.jsonl
+
+# Authenticate with HuggingFace
+huggingface-cli login
+
+# Upload parquet shards, manifest, and dataset card
+uv run python scripts/upload_to_hf.py \
+  --parquet-dir output/parquet \
+  --manifest output/parquet/manifest.jsonl \
+  --dataset-card DATASET_CARD.md \
+  --repo-id YOUR_USERNAME/afdb-structures
+```
+
+The upload uses `upload_large_folder` which handles chunked uploads and automatic resumption for large datasets. The manifest (`manifest.jsonl`) contains a summary line followed by one record per shard with row count, file size, pLDDT statistics, sequence length range, and split distribution.
+
 ## Reproducing the v1 Corpus (~24M documents)
 
 The commands below reproduce the full corpus on a machine with >=64GB RAM (for cluster maps) and GCP access.
@@ -308,18 +340,36 @@ uv run python scripts/run_local.py \
   --workers 32
 
 # 4. Generate documents from Parquet (no GCS needed, CPU-bound, much faster)
+#    --scheme selects the generator plugin and names the output subdirectory
+#    --skip-existing skips output shards already generated (safe to re-run)
+#    Input shards are grouped 10:1 into output shards (~1,200 output shards)
 uv run python scripts/run_local.py \
   --stage generate \
   --config config/default.yaml \
   --parquet-dir /data/tim/contactdoc/parquet \
   --output-dir /data/tim/contactdoc/results \
-  --workers 32
+  --scheme deterministic-positives-only \
+  --workers 32 \
+  --skip-existing
 
 # 5. Tokenize into Arrow dataset (contacts capped at 1x sequence length)
 uv run python scripts/build_dataset.py \
-  --input-dir /data/tim/contactdoc/results \
+  --input-dir /data/tim/contactdoc/results/deterministic-positives-only \
   --output-dir /data/tim/contactdoc/dataset \
   --max-contacts-ratio 1.0
+
+# 6. (Optional) Upload Parquet dataset to HuggingFace
+#    First generate a manifest, then upload
+uv run python scripts/make_parquet_manifest.py \
+  --parquet-dir /data/tim/contactdoc/parquet \
+  --output /data/tim/contactdoc/parquet/manifest.jsonl
+
+huggingface-cli login
+uv run python scripts/upload_to_hf.py \
+  --parquet-dir /data/tim/contactdoc/parquet \
+  --manifest /data/tim/contactdoc/parquet/manifest.jsonl \
+  --dataset-card DATASET_CARD.md \
+  --repo-id timodonnell/afdb-structures
 ```
 
 **Note:** GCP application-default credentials expire after ~1 hour of inactivity or ~12 hours total. If the download stage fails partway through due to auth expiry, re-authenticate and use `--retry-list` or `--retry-from` to resume (see above). The generate stage reads from local Parquet and does not need GCP credentials.

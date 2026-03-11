@@ -10,9 +10,15 @@ from .contacts import Contact
 def serialize_document(
     residues: list,
     contacts: list[Contact],
+    task_token: str | None = None,
 ) -> str:
-    """Serialize a single training document to text format."""
+    """Serialize a single training document to text format.
+
+    If task_token is provided, the document starts with <task_token_name>.
+    """
     lines = []
+    if task_token is not None:
+        lines.append(f"<{task_token}>")
     lines.append("<begin_sequence>")
 
     seq_tokens = " ".join(f"<{r.name}>" for r in residues)

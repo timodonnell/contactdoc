@@ -37,15 +37,19 @@ def _download_shard(args: tuple) -> str:
 
 
 def _generate_shard(args: tuple) -> str:
-    config_path, parquet_shard, shard_index, output_dir = args
+    config_path, parquet_shards, shard_index, output_dir, skip_existing, scheme = args
     script = str(Path(__file__).parent / "generate_docs.py")
     cmd = [
         sys.executable, script,
         "--config", config_path,
-        "--parquet-shard", parquet_shard,
         "--shard-index", str(shard_index),
         "--output-dir", output_dir,
+        "--scheme", scheme,
     ]
+    for ps in parquet_shards:
+        cmd.extend(["--parquet-shard", ps])
+    if skip_existing:
+        cmd.append("--skip-existing")
     return _run_worker(cmd, f"shard {shard_index}")
 
 
@@ -94,8 +98,11 @@ def _filter_shards(all_shards, retry_from, retry_list):
 @click.option("--workers", default=None, type=int, help="Number of workers (default from config or 16)")
 @click.option("--retry-from", default=None, type=int, help="Only process shards with index >= this value")
 @click.option("--retry-list", default=None, type=str, help="File with shard indices to retry (one per line)")
+@click.option("--skip-existing", is_flag=True, default=False, help="Skip shards whose output already exists (generate only)")
+@click.option("--scheme", default=None, type=str, help="Document generation scheme name (generate only, creates subdirectory)")
 def main(config_path: str | None, stage: str, manifest_dir: str | None, parquet_dir: str | None,
-         output_dir: str, use_gcs: bool, workers: int | None, retry_from: int | None, retry_list: str | None):
+         output_dir: str, use_gcs: bool, workers: int | None, retry_from: int | None, retry_list: str | None,
+         skip_existing: bool, scheme: str | None):
 
     if workers is None:
         if config_path:
@@ -122,15 +129,48 @@ def main(config_path: str | None, stage: str, manifest_dir: str | None, parquet_
             raise click.ClickException("--config is required for generate stage")
         if not parquet_dir:
             raise click.ClickException("--parquet-dir is required for generate stage")
-        parquet_paths = sorted(Path(parquet_dir).glob("shard_*.parquet"))
+        if not scheme:
+            raise click.ClickException("--scheme is required for generate stage")
+        # Recursively find parquet shards (supports subdirectories)
+        parquet_paths = sorted(Path(parquet_dir).rglob("shard_*.parquet"))
         if not parquet_paths:
             click.echo("No Parquet shards found!")
             return
-        all_shards = [(int(p.stem.split("_")[1]), p) for p in parquet_paths]
-        all_shards.sort()
-        all_shards, desc = _filter_shards(all_shards, retry_from, retry_list)
-        click.echo(f"{desc}, using {workers} workers (stage=generate)")
-        tasks = [(config_path, str(p), idx, output_dir) for idx, p in all_shards]
+        effective_output_dir = str(Path(output_dir) / scheme)
+
+        # Extract input shard indices and sort
+        input_shards = []
+        for p in parquet_paths:
+            idx = int(p.stem.split("_")[1])
+            input_shards.append((idx, p))
+        input_shards.sort()
+
+        # Group N input shards into 1 output shard (10:1 ratio)
+        group_size = 10
+        grouped = []  # list of (output_shard_index, [parquet_paths])
+        for i in range(0, len(input_shards), group_size):
+            group = input_shards[i:i + group_size]
+            output_idx = i // group_size
+            grouped.append((output_idx, [str(p) for _, p in group]))
+
+        # Apply retry filters on output shard indices
+        if retry_list is not None:
+            retry_indices = set()
+            with open(retry_list) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        retry_indices.add(int(line))
+            grouped = [(idx, paths) for idx, paths in grouped if idx in retry_indices]
+            desc = f"Retrying {len(grouped)} output shards from {retry_list}"
+        elif retry_from is not None:
+            grouped = [(idx, paths) for idx, paths in grouped if idx >= retry_from]
+            desc = f"Retrying output shards {retry_from}+ ({len(grouped)} shards)"
+        else:
+            desc = f"Found {len(input_shards)} input shards -> {len(grouped)} output shards (group_size={group_size})"
+
+        click.echo(f"{desc}, using {workers} workers (stage=generate, scheme={scheme}, skip_existing={skip_existing})")
+        tasks = [(config_path, paths, idx, effective_output_dir, skip_existing, scheme) for idx, paths in grouped]
         worker_fn = _generate_shard
 
     elif stage == "process":

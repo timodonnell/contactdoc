@@ -12,6 +12,7 @@ dependencies = [
     "click>=8.0",
     "datasets>=4.6.1",
     "pyarrow>=23.0.1",
+    "huggingface-hub>=1.6.0",
 ]
 
 [project.optional-dependencies]

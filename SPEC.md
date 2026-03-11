@@ -90,7 +90,7 @@ gs://YOUR_BUCKET/contactdoc/v1/config_sha=ABC123/
     shard=000000.metadata.jsonl.gz
 
 Text shard format:
-- concatenated documents back-to-back (each doc includes <end> terminal)
+- concatenated documents separated by `<end_of_document>` markers (each doc includes <end> terminal)
 
 Metadata shard format:
 - 1 JSON object per emitted doc
@@ -313,6 +313,7 @@ After filtering:
 ### 8.1 Document serialization
 Write exactly:
 
+<TASK_TOKEN>
 <begin_sequence>
 <RES_1> <RES_2> ... <RES_L>
 <begin_contacts>
@@ -322,9 +323,11 @@ Write exactly:
 <end>
 
 Rules:
+- each document starts with a task token identifying the generation scheme (e.g. `<deterministic-positives-only>`)
 - sequence is a single line with residue tokens separated by spaces
 - each contact is its own line, exactly 4 tokens
 - end markers exactly as above
+- documents within a shard are separated by `<end_of_document>`
 
 ### 8.2 Sidecar metadata JSONL (1 record per emitted doc)
 Required fields:

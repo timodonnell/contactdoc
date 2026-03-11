@@ -408,6 +408,7 @@ dependencies = [
     { name = "gemmi" },
     { name = "google-cloud-bigquery" },
     { name = "google-cloud-storage" },
+    { name = "huggingface-hub" },
     { name = "pyarrow" },
     { name = "pyyaml" },
 ]
@@ -424,6 +425,7 @@ requires-dist = [
     { name = "gemmi", specifier = ">=0.6.0" },
     { name = "google-cloud-bigquery", specifier = ">=3.0" },
     { name = "google-cloud-storage", specifier = ">=2.0" },
+    { name = "huggingface-hub", specifier = ">=1.6.0" },
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pyyaml", specifier = ">=6.0" },

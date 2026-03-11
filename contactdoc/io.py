@@ -18,7 +18,10 @@ class ShardWriter:
         self._error_buffers: dict[str, list[str]] = {}
 
     def add_document(self, split: str, doc_text: str, metadata_jsonl: str):
-        self._text_buffers.setdefault(split, []).append(doc_text)
+        buf = self._text_buffers.setdefault(split, [])
+        if buf:
+            buf.append("<end_of_document>\n")
+        buf.append(doc_text)
         self._meta_buffers.setdefault(split, []).append(metadata_jsonl + "\n")
 
     def add_error(self, split: str, error_jsonl: str):

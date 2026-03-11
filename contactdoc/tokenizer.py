@@ -7,15 +7,22 @@ Vocabulary layout (deterministic, no gaps):
   3: <end_contacts>
   4: <end>
   5: <newline>
-  6-26: 20 canonical residues + <UNK> (alphabetical)
-  27-62: 36 heavy atom names (alphabetical)
-  63-2110: position tokens <p1> .. <p2048>
+  6: <end_of_document>
+  7-8: task tokens (alphabetical)
+  9-29: 20 canonical residues + <UNK> (alphabetical)
+  30-66: 37 heavy atom names (alphabetical)
+  67-2114: position tokens <p1> .. <p2048>
 """
 
 import re
 
 # Structural / control tokens
-CONTROL_TOKENS = ["<pad>", "<begin_sequence>", "<begin_contacts>", "<end_contacts>", "<end>", "<newline>"]
+CONTROL_TOKENS = ["<pad>", "<begin_sequence>", "<begin_contacts>", "<end_contacts>", "<end>", "<newline>", "<end_of_document>"]
+
+# Task tokens: one per document generation scheme, alphabetical
+TASK_TOKENS = sorted([
+    "deterministic-positives-only",
+])
 
 # 20 canonical amino acids + UNK, alphabetical
 RESIDUE_NAMES = sorted([
@@ -42,6 +49,7 @@ def build_vocab() -> tuple[dict[str, int], dict[int, str]]:
     """Build the full token vocabulary. Returns (token_to_id, id_to_token)."""
     tokens = []
     tokens.extend(CONTROL_TOKENS)
+    tokens.extend(f"<{name}>" for name in TASK_TOKENS)
     tokens.extend(f"<{name}>" for name in RESIDUE_NAMES)
     tokens.extend(f"<{name}>" for name in ATOM_NAMES)
     tokens.extend(f"<p{i}>" for i in range(1, MAX_POSITION + 1))
