@@ -105,28 +105,24 @@ def main(config_path: str, parquet_shards: tuple[str, ...], shard_index: int,
         click.echo(f"Skipping shard {shard_index} (output already exists)")
         return
 
-    total_entries = 0
-    all_rows = []
-    for parquet_shard in parquet_shards:
-        table = pq.read_table(parquet_shard)
-        for i in range(len(table)):
-            all_rows.append({col: table.column(col)[i].as_py() for col in table.column_names})
-        total_entries += len(table)
-
-    click.echo(f"Processing output shard {shard_index}: {total_entries} entries from {len(parquet_shards)} input shard(s), scheme={scheme}")
+    click.echo(f"Processing output shard {shard_index}: {len(parquet_shards)} input shard(s), scheme={scheme}")
 
     writer = ShardWriter(output_dir, shard_index)
     success_count = 0
     error_count = 0
 
-    for row in all_rows:
-        doc_text, meta_jsonl, err_jsonl, split = process_row(row, cfg, generator)
-        if doc_text is not None:
-            writer.add_document(split, doc_text, meta_jsonl)
-            success_count += 1
-        if err_jsonl is not None:
-            writer.add_error(split, err_jsonl)
-            error_count += 1
+    for parquet_shard in parquet_shards:
+        table = pq.read_table(parquet_shard)
+        for i in range(len(table)):
+            row = {col: table.column(col)[i].as_py() for col in table.column_names}
+            doc_text, meta_jsonl, err_jsonl, split = process_row(row, cfg, generator)
+            if doc_text is not None:
+                writer.add_document(split, doc_text, meta_jsonl)
+                success_count += 1
+            if err_jsonl is not None:
+                writer.add_error(split, err_jsonl)
+                error_count += 1
+        del table
 
     paths = writer.flush()
     click.echo(f"Done: {success_count} docs, {error_count} errors, {len(paths)} files written")
