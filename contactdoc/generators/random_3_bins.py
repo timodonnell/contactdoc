@@ -14,9 +14,10 @@ from ..cif_parse import ParseResult
 from ..contacts import (
     Contact,
     _assign_bin,
-    compute_atom_distance,
-    compute_binned_contacts,
-    get_residue_heavy_atoms,
+    build_atom_position_cache,
+    compute_contacts,
+    filter_contacts_by_plddt,
+    min_distance_from_cache,
 )
 from .base import DocumentGenerator, GeneratorResult
 
@@ -98,23 +99,26 @@ class Random3Bins(DocumentGenerator):
         seed = int(hashlib.sha1(entry_id.encode()).hexdigest()[:8], 16)
         rng = random.Random(seed)
 
-        # Step 1-2: compute binned contacts
-        bins = compute_binned_contacts(parse_result, bin_edges, plddt_min)
-        eligible_residues = bins.pop("_eligible_residues")
-        pairs_within_cutoff = bins.pop("_pairs_within_cutoff")
-
-        bin1_contacts = bins[0]  # < 4 Å
-        bin2_contacts = bins[1]  # 4-12 Å
-        # bin 2 (index 2) is > 12 Å, sampled lazily
+        # Step 1: compute bin-1 contacts (< 4 Å) using fast Gemmi search
+        first_edge = bin_edges[0]
+        bin1_contacts = compute_contacts(parse_result, first_edge)
+        bin1_contacts = filter_contacts_by_plddt(
+            bin1_contacts, parse_result, plddt_min,
+        )
+        bin1_pairs = {(c.i, c.j) for c in bin1_contacts}
 
         if not bin1_contacts:
             return "no_contacts_in_bin1"
 
         C_raw = len(bin1_contacts)
 
+        # Build atom position cache for fast distance computation
+        atom_cache = build_atom_position_cache(parse_result, plddt_min)
+        eligible_residues = list(atom_cache.keys())
+
         # Step 3-4: budget calculation
         num_residues = len(parse_result.residues)
-        fixed_overhead = 6 + num_residues  # task + begin_seq + residues + begin_contacts + end_contacts + end + plddt
+        fixed_overhead = 6 + num_residues
         tokens_per_contact = 5
         contact_budget = (r3b.max_tokens - fixed_overhead) // tokens_per_contact
 
@@ -145,7 +149,6 @@ class Random3Bins(DocumentGenerator):
             C = int(available * bin_rates[0] / total_ratio)
             n_bin2_target = round(C * bin_rates[1])
             n_bin3_target = round(C * bin_rates[2])
-            # Ensure we don't exceed budget
             while C + n_bin2_target + n_bin3_target + n_false + n_corrections > contact_budget:
                 C -= 1
         else:
@@ -163,51 +166,46 @@ class Random3Bins(DocumentGenerator):
         else:
             selected_bin1 = list(bin1_contacts)
 
-        # Sample bin2
-        n_bin2 = min(n_bin2_target, len(bin2_contacts))
-        selected_bin2 = rng.sample(bin2_contacts, n_bin2) if n_bin2 > 0 else []
-
-        # Sample bin3 (lazy: sample eligible pairs not in cutoff set)
-        selected_bin3 = _sample_bin3_pairs(
-            eligible_residues, pairs_within_cutoff, n_bin3_target,
-            parse_result, rng,
+        # Step 2 (bin 2 & 3): sample random pairs and classify by distance
+        selected_bin2, selected_bin3 = _sample_bin2_bin3(
+            eligible_residues, bin1_pairs, atom_cache, bin_edges,
+            n_bin2_target, n_bin3_target, rng,
         )
 
         # Build the contact list with bin assignments
-        contacts_pre_filter = C_raw + len(bin2_contacts)
+        contacts_pre_filter = C_raw
         contact_list: list[BinnedContact] = []
 
         for c in selected_bin1:
             contact_list.append(BinnedContact(
-                i=c.i, j=c.j, atom_i=c.atom_i, atom_j=c.atom_j,
-                bin_idx=0,
+                i=c.i, j=c.j, atom_i=c.atom_i, atom_j=c.atom_j, bin_idx=0,
             ))
         for c in selected_bin2:
             contact_list.append(BinnedContact(
-                i=c.i, j=c.j, atom_i=c.atom_i, atom_j=c.atom_j,
-                bin_idx=1,
+                i=c.i, j=c.j, atom_i=c.atom_i, atom_j=c.atom_j, bin_idx=1,
             ))
         for c in selected_bin3:
             contact_list.append(BinnedContact(
-                i=c.i, j=c.j, atom_i=c.atom_i, atom_j=c.atom_j,
-                bin_idx=2,
+                i=c.i, j=c.j, atom_i=c.atom_i, atom_j=c.atom_j, bin_idx=2,
             ))
 
         # Step 8: atom resampling (1% per real contact)
         for bc in contact_list:
             if rng.random() < r3b.atom_resample_prob:
-                atoms_i = get_residue_heavy_atoms(parse_result, bc.i)
-                atoms_j = get_residue_heavy_atoms(parse_result, bc.j)
-                if atoms_i and atoms_j:
-                    bc.atom_i = rng.choice(atoms_i)
-                    bc.atom_j = rng.choice(atoms_j)
-                    dist = compute_atom_distance(
-                        parse_result, bc.i, bc.atom_i, bc.j, bc.atom_j,
+                cached_i = atom_cache.get(bc.i)
+                cached_j = atom_cache.get(bc.j)
+                if cached_i and cached_j:
+                    ai_name, _, _, _ = rng.choice(cached_i)
+                    aj_name, _, _, _ = rng.choice(cached_j)
+                    bc.atom_i = ai_name
+                    bc.atom_j = aj_name
+                    dist, _, _ = min_distance_from_cache(
+                        [(ai_name, x, y, z) for (n, x, y, z) in cached_i if n == ai_name],
+                        [(aj_name, x, y, z) for (n, x, y, z) in cached_j if n == aj_name],
                     )
                     bc.bin_idx = _assign_bin(dist, bin_edges)
 
         # Step 5: false contact injection
-        # Compute bin proportions from the real contact set
         bin_counts = [0] * (len(bin_edges) + 1)
         for bc in contact_list:
             bin_counts[bc.bin_idx] += 1
@@ -218,61 +216,55 @@ class Random3Bins(DocumentGenerator):
             bin_probs = [c / total_real for c in bin_counts]
 
         false_contacts: list[BinnedContact] = []
-        false_true_bins: dict[int, int] = {}  # index in false_contacts -> true bin
+        false_true_bins: dict[int, int] = {}
 
         for fi in range(n_false):
             if len(eligible_residues) < 2:
                 break
             ri, rj = _sample_pair(eligible_residues, rng)
-            atoms_i = get_residue_heavy_atoms(parse_result, ri)
-            atoms_j = get_residue_heavy_atoms(parse_result, rj)
-            if not atoms_i or not atoms_j:
+            cached_i = atom_cache.get(ri)
+            cached_j = atom_cache.get(rj)
+            if not cached_i or not cached_j:
                 continue
-            atom_i = rng.choice(atoms_i)
-            atom_j = rng.choice(atoms_j)
-            # Sample a bin from the categorical distribution
+            ai_name, _, _, _ = rng.choice(cached_i)
+            aj_name, _, _, _ = rng.choice(cached_j)
             sampled_bin = _sample_categorical(bin_probs, rng)
 
-            # Determine true bin for this pair+atoms
-            dist = compute_atom_distance(
-                parse_result, ri, atom_i, rj, atom_j,
-            )
+            # Compute true distance for these specific atoms
+            ai_entries = [(n, x, y, z) for (n, x, y, z) in cached_i if n == ai_name]
+            aj_entries = [(n, x, y, z) for (n, x, y, z) in cached_j if n == aj_name]
+            dist, _, _ = min_distance_from_cache(ai_entries, aj_entries)
             true_bin = _assign_bin(dist, bin_edges)
             false_true_bins[len(false_contacts)] = true_bin
 
             fc = BinnedContact(
-                i=ri, j=rj, atom_i=atom_i, atom_j=atom_j,
+                i=ri, j=rj, atom_i=ai_name, atom_j=aj_name,
                 bin_idx=sampled_bin, is_false=True,
             )
             false_contacts.append(fc)
 
-        # Mark false contacts that happen to be correct
-        actually_false = []
-        for fi, fc in enumerate(false_contacts):
-            if fc.bin_idx != false_true_bins.get(fi, -1):
-                actually_false.append(fi)
+        actually_false = [
+            fi for fi, fc in enumerate(false_contacts)
+            if fc.bin_idx != false_true_bins.get(fi, -1)
+        ]
 
         # Step 7: combine and shuffle
         all_contacts = contact_list + false_contacts
         rng.shuffle(all_contacts)
 
-        # Step 6: insert corrections
-        # Build correction entries for false contacts
-        corrections_needed = {}  # maps (i,j) of false contact -> (true atoms, true bin)
-        for fi, fc in enumerate(false_contacts):
-            if fi not in actually_false:
-                continue  # happened to be correct, no correction needed
-            # Find the closest atom pair for this residue pair
-            true_bin = false_true_bins[fi]
-            # Get the closest atoms from the binned contacts if available
-            closest = _find_closest_contact(
-                fc.i, fc.j, bins, parse_result, bin_edges,
-            )
-            corrections_needed[(fc.i, fc.j)] = closest
+        # Step 6: build correction info for false contacts
+        corrections_needed = {}
+        for fi in actually_false:
+            fc = false_contacts[fi]
+            # Find closest atom pair for the correction
+            cached_i = atom_cache.get(fc.i)
+            cached_j = atom_cache.get(fc.j)
+            if cached_i and cached_j:
+                dist, ai, aj = min_distance_from_cache(cached_i, cached_j)
+                corr_bin = _assign_bin(dist, bin_edges)
+                corrections_needed[(fc.i, fc.j)] = (ai, aj, corr_bin)
 
-        # Now iterate through positions and insert corrections.
-        # We budget at most n_corrections total correction entries to avoid
-        # exceeding the token budget.
+        # Insert corrections during iteration
         T = len(all_contacts)
         output_entries: list[BinnedContact] = []
         uncorrected: dict[tuple[int, int], tuple[str, str, int]] = {}
@@ -283,28 +275,21 @@ class Random3Bins(DocumentGenerator):
             output_entries.append(bc)
             position += 1
 
-            # If this is a false contact, add to uncorrected set
             if bc.is_false and (bc.i, bc.j) in corrections_needed:
                 uncorrected[(bc.i, bc.j)] = corrections_needed[(bc.i, bc.j)]
 
-            # Try to emit corrections
             if uncorrected:
                 F = len(uncorrected)
                 frac = position / max(T, 1)
                 p_correct = 1.0 - (1.0 - frac) ** F
                 if rng.random() < p_correct:
-                    # Pick a random uncorrected false contact to correct
                     pair = rng.choice(list(uncorrected.keys()))
                     corr_atom_i, corr_atom_j, corr_bin = uncorrected[pair]
 
-                    # With small probability, the correction is itself wrong
                     if rng.random() < r3b.correction_resample_prob:
                         resampled_bin = _sample_categorical(bin_probs, rng)
                         true_info = corrections_needed.get(pair)
                         if true_info and resampled_bin != true_info[2]:
-                            # Still wrong — emit the bad correction but keep
-                            # the pair in uncorrected with its true values so
-                            # it will be corrected at the end.
                             correction = BinnedContact(
                                 i=pair[0], j=pair[1],
                                 atom_i=corr_atom_i, atom_j=corr_atom_j,
@@ -312,22 +297,20 @@ class Random3Bins(DocumentGenerator):
                             )
                             output_entries.append(correction)
                             corrections_emitted += 1
-                            # Don't remove from uncorrected — will get a true
-                            # correction at the end
                             continue
                         else:
                             corr_bin = resampled_bin
 
-                    # Apply atom resampling to corrections too
+                    # Apply atom resampling to corrections
                     if rng.random() < r3b.atom_resample_prob:
-                        atoms_i = get_residue_heavy_atoms(parse_result, pair[0])
-                        atoms_j = get_residue_heavy_atoms(parse_result, pair[1])
-                        if atoms_i and atoms_j:
-                            corr_atom_i = rng.choice(atoms_i)
-                            corr_atom_j = rng.choice(atoms_j)
-                            dist = compute_atom_distance(
-                                parse_result, pair[0], corr_atom_i, pair[1], corr_atom_j,
-                            )
+                        cached_i = atom_cache.get(pair[0])
+                        cached_j = atom_cache.get(pair[1])
+                        if cached_i and cached_j:
+                            corr_atom_i, _, _, _ = rng.choice(cached_i)
+                            corr_atom_j, _, _, _ = rng.choice(cached_j)
+                            ai_e = [(n, x, y, z) for (n, x, y, z) in cached_i if n == corr_atom_i]
+                            aj_e = [(n, x, y, z) for (n, x, y, z) in cached_j if n == corr_atom_j]
+                            dist, _, _ = min_distance_from_cache(ai_e, aj_e)
                             corr_bin = _assign_bin(dist, bin_edges)
 
                     correction = BinnedContact(
@@ -339,7 +322,7 @@ class Random3Bins(DocumentGenerator):
                     corrections_emitted += 1
                     del uncorrected[pair]
 
-        # Flush remaining uncorrected false contacts at the end
+        # Flush remaining uncorrected at end
         for pair, (corr_atom_i, corr_atom_j, corr_bin) in uncorrected.items():
             correction = BinnedContact(
                 i=pair[0], j=pair[1],
@@ -349,13 +332,11 @@ class Random3Bins(DocumentGenerator):
             output_entries.append(correction)
             corrections_emitted += 1
 
-        # Step 5 (pLDDT): insert pLDDT bin token at random position
+        # pLDDT token
         global_plddt = sum(r.plddt for r in parse_result.residues) / len(parse_result.residues)
         plddt_token = _plddt_bin_token(global_plddt, r3b.plddt_bin_edges)
-
-        # Choose a random position between 5-tuple boundaries
         n_entries = len(output_entries)
-        plddt_insert_pos = rng.randint(0, n_entries)  # 0 to n inclusive
+        plddt_insert_pos = rng.randint(0, n_entries)
 
         # Serialize
         doc_text = _serialize_random_3_bins(
@@ -436,83 +417,53 @@ def _sample_categorical(probs: list[float], rng: random.Random) -> int:
     return len(probs) - 1
 
 
-def _sample_bin3_pairs(
+def _sample_bin2_bin3(
     eligible_residues: list[int],
-    pairs_within_cutoff: set[tuple[int, int]],
-    n_target: int,
-    parse_result: ParseResult,
+    bin1_pairs: set[tuple[int, int]],
+    atom_cache: dict[int, list[tuple[str, float, float, float]]],
+    bin_edges: list[float],
+    n_bin2_target: int,
+    n_bin3_target: int,
     rng: random.Random,
-) -> list[Contact]:
-    """Sample residue pairs for bin 3 (beyond max cutoff)."""
-    if len(eligible_residues) < 2 or n_target <= 0:
-        return []
+) -> tuple[list[Contact], list[Contact]]:
+    """Sample residue pairs for bin 2 and bin 3 by random pair sampling.
 
-    # Sample pairs not in the cutoff set
-    results = []
-    attempts = 0
-    max_attempts = n_target * 20
+    Avoids the expensive large-cutoff Gemmi search by sampling random pairs
+    and computing their closest-atom distance from cached positions.
+    """
+    if len(eligible_residues) < 2:
+        return [], []
 
-    while len(results) < n_target and attempts < max_attempts:
-        attempts += 1
+    bin2_results: list[Contact] = []
+    bin3_results: list[Contact] = []
+    seen: set[tuple[int, int]] = set()
+    max_attempts = (n_bin2_target + n_bin3_target) * 50
+
+    for _ in range(max_attempts):
+        if len(bin2_results) >= n_bin2_target and len(bin3_results) >= n_bin3_target:
+            break
+
         a, b = rng.sample(eligible_residues, 2)
         i, j = min(a, b), max(a, b)
-        if j - i <= 1:
+        if j - i <= 1 or (i, j) in bin1_pairs or (i, j) in seen:
             continue
-        if (i, j) in pairs_within_cutoff:
-            continue
-        # Already sampled this pair?
-        if any(c.i == i and c.j == j for c in results):
-            continue
+        seen.add((i, j))
 
-        # Get closest heavy atoms (we don't have them precomputed,
-        # so pick arbitrary atoms — the distance is known to be > cutoff)
-        atoms_i = get_residue_heavy_atoms(parse_result, i)
-        atoms_j = get_residue_heavy_atoms(parse_result, j)
-        if not atoms_i or not atoms_j:
+        cached_i = atom_cache.get(i)
+        cached_j = atom_cache.get(j)
+        if not cached_i or not cached_j:
             continue
 
-        # Use CA if available, otherwise first heavy atom
-        atom_i = "CA" if "CA" in atoms_i else atoms_i[0]
-        atom_j = "CA" if "CA" in atoms_j else atoms_j[0]
+        dist, best_ai, best_aj = min_distance_from_cache(cached_i, cached_j)
+        bin_idx = _assign_bin(dist, bin_edges)
 
-        results.append(Contact(i=i, j=j, atom_i=atom_i, atom_j=atom_j, distance=float("inf")))
+        if bin_idx == 1 and len(bin2_results) < n_bin2_target:
+            bin2_results.append(Contact(
+                i=i, j=j, atom_i=best_ai, atom_j=best_aj, distance=dist,
+            ))
+        elif bin_idx >= 2 and len(bin3_results) < n_bin3_target:
+            bin3_results.append(Contact(
+                i=i, j=j, atom_i=best_ai, atom_j=best_aj, distance=dist,
+            ))
 
-    return results
-
-
-def _find_closest_contact(
-    i: int, j: int,
-    bins: dict,
-    parse_result: ParseResult,
-    bin_edges: list[float],
-) -> tuple[str, str, int]:
-    """Find the closest heavy-atom pair for a residue pair and its bin.
-
-    Searches precomputed bins first, falls back to computing distance.
-    """
-    # Check if this pair exists in any bin
-    for bin_idx in range(len(bin_edges) + 1):
-        if bin_idx not in bins:
-            continue
-        for c in bins[bin_idx]:
-            if c.i == i and c.j == j:
-                return (c.atom_i, c.atom_j, bin_idx)
-
-    # Not found in precomputed — compute distance for CA-CA
-    atoms_i = get_residue_heavy_atoms(parse_result, i)
-    atoms_j = get_residue_heavy_atoms(parse_result, j)
-    if not atoms_i or not atoms_j:
-        return ("CA", "CA", len(bin_edges))
-
-    # Find closest pair by brute force
-    best_dist = float("inf")
-    best_ai, best_aj = atoms_i[0], atoms_j[0]
-    for ai in atoms_i:
-        for aj in atoms_j:
-            d = compute_atom_distance(parse_result, i, ai, j, aj)
-            if d < best_dist:
-                best_dist = d
-                best_ai, best_aj = ai, aj
-
-    bin_idx = _assign_bin(best_dist, bin_edges)
-    return (best_ai, best_aj, bin_idx)
+    return bin2_results, bin3_results

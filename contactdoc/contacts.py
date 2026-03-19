@@ -106,53 +106,50 @@ def sort_and_truncate(
     return contacts[:max_contacts]
 
 
-def compute_binned_contacts(
+def build_atom_position_cache(
     parse_result: ParseResult,
-    bin_edges: list[float],
     residue_plddt_min: float,
-) -> dict[int, list[Contact]]:
-    """Compute contacts binned by distance.
+) -> dict[int, list[tuple[str, float, float, float]]]:
+    """Cache heavy atom positions per residue for fast distance computation.
 
-    Uses the largest bin edge as the Gemmi cutoff. Pairs beyond the cutoff
-    are inferred as belonging to the last bin without computing distances.
-
-    Args:
-        parse_result: Parsed structure.
-        bin_edges: Distance thresholds, e.g. [4.0, 12.0] gives 3 bins:
-                   bin 0: < 4.0, bin 1: 4.0-12.0, bin 2: > 12.0
-        residue_plddt_min: Per-residue pLDDT filter threshold.
-
-    Returns:
-        Dict mapping bin index to list of Contact objects.
-        The last bin (beyond max cutoff) has contacts with distance=inf
-        and atoms set to the closest pair from the max-cutoff search
-        (or empty strings if no atom pair was found within cutoff).
+    Returns dict mapping 1-based residue index to list of
+    (atom_name, x, y, z) tuples. Only includes residues passing pLDDT.
     """
-    max_cutoff = max(bin_edges)
+    cache = {}
+    for r in parse_result.residues:
+        if r.plddt < residue_plddt_min:
+            continue
+        atoms = []
+        for atom in r.gemmi_residue:
+            if not atom.is_hydrogen():
+                atoms.append((atom.name.strip(), atom.pos.x, atom.pos.y, atom.pos.z))
+        if atoms:
+            cache[r.index] = atoms
+    return cache
 
-    # Get all contacts within max cutoff
-    all_within = compute_contacts(parse_result, max_cutoff)
-    all_within = filter_contacts_by_plddt(all_within, parse_result, residue_plddt_min)
 
-    # Bin the contacts
-    num_bins = len(bin_edges) + 1
-    bins: dict[int, list[Contact]] = {i: [] for i in range(num_bins)}
+def min_distance_from_cache(
+    atoms_i: list[tuple[str, float, float, float]],
+    atoms_j: list[tuple[str, float, float, float]],
+) -> tuple[float, str, str]:
+    """Compute minimum distance between two sets of cached atom positions.
 
-    pairs_within_cutoff = set()
-    for c in all_within:
-        pairs_within_cutoff.add((c.i, c.j))
-        bin_idx = _assign_bin(c.distance, bin_edges)
-        bins[bin_idx].append(c)
-
-    # The last bin is all eligible pairs NOT in pairs_within_cutoff.
-    # We don't enumerate these eagerly; instead we store the set of
-    # eligible residues and the pairs to exclude. The generator will
-    # sample from this set on demand.
-    # Store metadata for lazy sampling on the bins dict.
-    bins["_eligible_residues"] = _get_eligible_residues(parse_result, residue_plddt_min)
-    bins["_pairs_within_cutoff"] = pairs_within_cutoff
-
-    return bins
+    Returns (distance, atom_name_i, atom_name_j).
+    """
+    best_d = float("inf")
+    best_ai = atoms_i[0][0]
+    best_aj = atoms_j[0][0]
+    for (ai, xi, yi, zi) in atoms_i:
+        for (aj, xj, yj, zj) in atoms_j:
+            dx = xi - xj
+            dy = yi - yj
+            dz = zi - zj
+            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if d < best_d:
+                best_d = d
+                best_ai = ai
+                best_aj = aj
+    return best_d, best_ai, best_aj
 
 
 def _assign_bin(distance: float, bin_edges: list[float]) -> int:
