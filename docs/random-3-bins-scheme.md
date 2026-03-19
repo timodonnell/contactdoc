@@ -94,18 +94,20 @@ If the total number of bin-1 contacts (after weighting) fits within the budget, 
 
 ### Step 4: Budget Calculation and Sampling
 
-The token budget is 8000 tokens. Fixed overhead:
-- Task token line: 2 tokens (`<random-3-bins>` `<newline>`)
-- Sequence section: `num_residues + 3` tokens (`<begin_sequence>` `<newline>` residue tokens `<newline>`)
-- Contacts framing: 4 tokens (`<begin_contacts>` `<newline>` `<end_contacts>` `<newline>`)
-- End: 2 tokens (`<end>` `<newline>`)
-- pLDDT token: 2 tokens (token + `<newline>`)
+The token budget is 8000 tokens. There are no `<newline>` tokens — all tokens flow continuously.
 
-Each contact 5-tuple: 6 tokens (5 content tokens + `<newline>`).
+Fixed overhead:
+- Task token: 1 token (`<random-3-bins>`)
+- Sequence section: `num_residues + 1` tokens (`<begin_sequence>` + residue tokens)
+- Contacts framing: 2 tokens (`<begin_contacts>` `<end_contacts>`)
+- End: 1 token (`<end>`)
+- pLDDT token: 1 token
+
+Each contact 5-tuple: 5 tokens.
 
 Available budget for contacts:
 ```
-contact_budget = floor((8000 - overhead - num_residues) / 6)
+contact_budget = floor((8000 - 6 - num_residues) / 5)
 ```
 
 #### Contact allocation:
