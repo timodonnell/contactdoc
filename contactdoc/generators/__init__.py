@@ -2,10 +2,12 @@
 
 from .base import DocumentGenerator, GeneratorResult
 from .deterministic_positives_only import DeterministicPositivesOnly
+from .random_3_bins import Random3Bins
 
 # Registry: scheme name -> generator class
 GENERATORS: dict[str, type[DocumentGenerator]] = {
     "deterministic-positives-only": DeterministicPositivesOnly,
+    "random-3-bins": Random3Bins,
 }
 
 

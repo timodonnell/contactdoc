@@ -22,6 +22,7 @@ CONTROL_TOKENS = ["<pad>", "<begin_sequence>", "<begin_contacts>", "<end_contact
 # Task tokens: one per document generation scheme, alphabetical
 TASK_TOKENS = sorted([
     "deterministic-positives-only",
+    "random-3-bins",
 ])
 
 # 20 canonical amino acids + UNK, alphabetical
@@ -40,6 +41,24 @@ ATOM_NAMES = sorted([
     "SD", "SG",
 ])
 
+# Distance bin tokens
+DISTANCE_BIN_TOKENS = sorted([
+    "bin_4_12",
+    "bin_gt12",
+    "bin_lt4",
+])
+
+# pLDDT bin tokens
+PLDDT_BIN_TOKENS = sorted([
+    "plddt_70_75",
+    "plddt_75_80",
+    "plddt_80_85",
+    "plddt_85_90",
+    "plddt_90_95",
+    "plddt_95_100",
+    "plddt_lt70",
+])
+
 MAX_POSITION = 2048
 
 _TOKEN_PATTERN = re.compile(r"<[^>]+>")
@@ -52,6 +71,8 @@ def build_vocab() -> tuple[dict[str, int], dict[int, str]]:
     tokens.extend(f"<{name}>" for name in TASK_TOKENS)
     tokens.extend(f"<{name}>" for name in RESIDUE_NAMES)
     tokens.extend(f"<{name}>" for name in ATOM_NAMES)
+    tokens.extend(f"<{name}>" for name in DISTANCE_BIN_TOKENS)
+    tokens.extend(f"<{name}>" for name in PLDDT_BIN_TOKENS)
     tokens.extend(f"<p{i}>" for i in range(1, MAX_POSITION + 1))
 
     token_to_id = {tok: i for i, tok in enumerate(tokens)}
