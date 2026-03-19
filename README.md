@@ -19,7 +19,38 @@ Example output document:
 
 Each document begins with a **task token** identifying the generation scheme. Documents in a shard are separated by `<end_of_document>`. Multiple generation schemes can be added via the plugin architecture (see `contactdoc/generators/`).
 
-Contacts are heavy-atom pairs within a distance cutoff (default 4.0 A), one per residue pair, sorted by decreasing sequence separation. Leakage-resistant train/val/test splits are enforced using precomputed sequence-similarity clusters (Foldseek AFDB50).
+### Generation Schemes
+
+**`deterministic-positives-only`** — Baseline scheme. Contacts are heavy-atom pairs within a distance cutoff (default 4.0 Å), one per residue pair, sorted by decreasing sequence separation. Each contact is a 4-tuple: `<position_i> <position_j> <atom_i> <atom_j>`.
+
+**`random-3-bins`** — Distance-binned scheme with noise and self-correction. Each contact is a 6-token group: a `<correction>` or `<non-correction>` marker followed by a 5-tuple (`position_i`, `position_j`, `atom_i`, `atom_j`, `distance_bin`). Includes:
+- Three distance bins: `<bin_lt4>` (< 4 Å), `<bin_4_12>` (4–12 Å), `<bin_gt12>` (> 12 Å)
+- False contact injection (Poisson λ=2) with subsequent corrections
+- Long-range contact upsampling (log-weighted by sequence separation)
+- Atom resampling (1% chance per contact)
+- Global pLDDT bin token (50% at end, 50% random position)
+
+Example `random-3-bins` document:
+
+```
+<random-3-bins>
+<begin_sequence>
+<MET> <LYS> <PHE> <CYS> <ASP> <TYR> <GLY> <LEU>
+<begin_contacts>
+<non-correction> <p1> <p5> <SD> <CD1> <bin_lt4>
+<non-correction> <p3> <p7> <CA> <CB> <bin_4_12>
+<non-correction> <p2> <p6> <NZ> <OH> <bin_gt12>
+<non-correction> <p4> <p8> <CB> <O> <bin_lt4>
+<correction> <p3> <p7> <CG> <CB> <bin_lt4>
+<plddt_80_85>
+<non-correction> <p1> <p6> <CE> <OH> <bin_lt4>
+<end_contacts>
+<end>
+```
+
+See [docs/random-3-bins-scheme.md](docs/random-3-bins-scheme.md) for the full specification.
+
+Leakage-resistant train/val/test splits are enforced using precomputed sequence-similarity clusters (Foldseek AFDB50).
 
 The pipeline:
 
