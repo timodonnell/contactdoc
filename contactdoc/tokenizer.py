@@ -41,6 +41,12 @@ ATOM_NAMES = sorted([
     "SD", "SG",
 ])
 
+# Correction markers
+CORRECTION_TOKENS = sorted([
+    "correction",
+    "non-correction",
+])
+
 # Distance bin tokens
 DISTANCE_BIN_TOKENS = sorted([
     "bin_4_12",
@@ -71,6 +77,7 @@ def build_vocab() -> tuple[dict[str, int], dict[int, str]]:
     tokens.extend(f"<{name}>" for name in TASK_TOKENS)
     tokens.extend(f"<{name}>" for name in RESIDUE_NAMES)
     tokens.extend(f"<{name}>" for name in ATOM_NAMES)
+    tokens.extend(f"<{name}>" for name in CORRECTION_TOKENS)
     tokens.extend(f"<{name}>" for name in DISTANCE_BIN_TOKENS)
     tokens.extend(f"<{name}>" for name in PLDDT_BIN_TOKENS)
     tokens.extend(f"<p{i}>" for i in range(1, MAX_POSITION + 1))

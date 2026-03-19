@@ -4,14 +4,21 @@
 
 This scheme generates training documents that include a mix of true contacts, near-miss pairs, distant pairs, and intentionally false contacts with subsequent corrections. The goal is to train a model that can reason about protein contacts in the presence of noise and learn to self-correct.
 
-Each document describes one protein structure. The output is a tokenized sequence containing the amino acid sequence, a set of 5-tuples describing residue pair interactions (with distance bins), a binned global pLDDT confidence token, and occasional corrections of previously stated false information.
+Each document describes one protein structure. The output is a tokenized sequence containing the amino acid sequence, a set of 6-token groups describing residue pair interactions (with distance bins and correction/non-correction markers), a binned global pLDDT confidence token, and occasional corrections of previously stated false information.
 
 ## Token Format
 
-Each contact is a 5-tuple:
+Each contact entry is a 6-token group:
 ```
-<p{i}> <p{j}> <{atom_i}> <{atom_j}> <{distance_bin}>
+<non-correction> <p{i}> <p{j}> <{atom_i}> <{atom_j}> <{distance_bin}>
 ```
+or for corrections:
+```
+<correction> <p{i}> <p{j}> <{atom_i}> <{atom_j}> <{distance_bin}>
+```
+
+- `<non-correction>` — first time this residue pair `(i, j)` appears in the document.
+- `<correction>` — this residue pair was seen before; this entry updates/corrects the previous value.
 
 Distance bin tokens:
 - `<bin_lt4>` — closest heavy-atom distance < 4 Å
@@ -32,19 +39,37 @@ pLDDT bin tokens (based on global pLDDT):
 ```
 <random-3-bins>
 <begin_sequence>
-<MET> <LYS> <PHE> ...
+<MET> <LYS> <PHE> <CYS> <ASP> <TYR> <GLY> <LEU>
 <begin_contacts>
-<p1> <p50> <SD> <CD1> <bin_lt4>
-<p3> <p80> <CA> <CB> <bin_4_12>
+<non-correction> <p1> <p5> <SD> <CD1> <bin_lt4>
+<non-correction> <p3> <p7> <CA> <CB> <bin_4_12>       ← false contact (true bin is bin_lt4)
+<non-correction> <p2> <p6> <NZ> <OH> <bin_gt12>
+<non-correction> <p4> <p8> <CB> <O> <bin_lt4>
+<correction> <p3> <p7> <CG> <CB> <bin_lt4>            ← corrects p3,p7 to correct bin
 <plddt_80_85>
-<p10> <p45> <NZ> <O> <bin_gt12>
-<p3> <p80> <CG> <CB> <bin_lt4>       ← correction of earlier false entry
-...
+<non-correction> <p1> <p6> <CE> <OH> <bin_lt4>
 <end_contacts>
 <end>
 ```
 
-The pLDDT token appears exactly once, at a uniformly random position between complete 5-tuples in the contacts section.
+Or with pLDDT at end (50% of documents):
+
+```
+<random-3-bins>
+<begin_sequence>
+<MET> <LYS> <PHE> ...
+<begin_contacts>
+<non-correction> <p1> <p5> <SD> <CD1> <bin_lt4>
+...
+<end_contacts>
+<plddt_80_85>
+<end>
+```
+
+### Rules for special tokens
+
+- **`<non-correction>` / `<correction>`**: Every 6-token group starts with one of these. `<non-correction>` is used the first time a residue pair appears. `<correction>` is used for any subsequent mention of the same residue pair.
+- **pLDDT token**: Exactly one per document. In 50% of documents, placed just before `<end>` (after `<end_contacts>`). In the other 50%, placed at a uniformly random position between complete 6-token groups in the contacts section.
 
 Target document length: ~8000 tokens maximum.
 
@@ -61,11 +86,7 @@ All randomness is seeded deterministically from `SHA1(entry_id)` so that the sam
 
 ### Step 2: Compute Pairwise Distances
 
-Use Gemmi's `ContactSearch` at a 12 Å cutoff to find all residue pairs with closest heavy-atom distance ≤ 12 Å. This gives us:
-- **Bin 1 (< 4 Å)**: true contacts
-- **Bin 2 (4–12 Å)**: near-miss pairs
-
-For **Bin 3 (> 12 Å)**: all eligible residue pairs (|i - j| > 1, both residues passing pLDDT) that do NOT appear in the bin-1 or bin-2 sets. We do not compute actual distances for these unless needed (atom resampling case); we know they are > 12 Å by exclusion.
+Use Gemmi's `ContactSearch` at a 4 Å cutoff to find bin-1 contacts (true contacts). For bin-2 (4–12 Å) and bin-3 (> 12 Å), sample random residue pairs and compute their closest heavy-atom distance using cached atom positions. This avoids the expensive large-cutoff Gemmi search.
 
 For each pair, record the closest heavy-atom pair and its distance.
 
@@ -103,11 +124,11 @@ Fixed overhead:
 - End: 1 token (`<end>`)
 - pLDDT token: 1 token
 
-Each contact 5-tuple: 5 tokens.
+Each contact 6-token group: 6 tokens (correction marker + 5-tuple).
 
 Available budget for contacts:
 ```
-contact_budget = floor((8000 - 6 - num_residues) / 5)
+contact_budget = floor((8000 - 6 - num_residues) / 6)
 ```
 
 #### Contact allocation:
@@ -119,7 +140,7 @@ Target counts (before budget constraint):
 - Bin 2: `round(C_raw * 0.2)` (sampled uniformly from bin-2 pairs)
 - Bin 3: `round(C_raw * 0.1)` (sampled uniformly from bin-3 pairs)
 - False contacts: `Poisson(λ=2.0)` (see Step 5)
-- Corrections: equal to number of false contacts (see Step 6)
+- Corrections: up to `2 × N_false` worst case (see Step 6)
 
 Total target contacts = `C_raw + round(C_raw * 0.2) + round(C_raw * 0.1) + N_false + N_corrections`.
 
@@ -161,12 +182,14 @@ A correction re-specifies the same residue pair `(i, j)` with:
 
 All remaining uncorrected false contacts are corrected (truly) at the end, before `<end_contacts>`.
 
+Correction entries are prefixed with `<correction>`. All other entries (first appearance of a residue pair) are prefixed with `<non-correction>`.
+
 ### Step 7: Shuffling and Assembly
 
 1. Combine all contacts from Step 4 (bin 1, 2, 3 samples) into a single list.
 2. Shuffle uniformly.
 3. Iterate through the shuffled list, inserting corrections per Step 6 at each position.
-4. Insert the pLDDT bin token at a uniformly random position (between complete 5-tuples).
+4. Flip a coin (50/50): if heads, the pLDDT token goes just before `<end>` (after `<end_contacts>`). If tails, insert it at a uniformly random position between complete 6-token groups in the contacts section.
 5. Serialize to text.
 
 ### Step 8: Atom Resampling (1% per contact)
@@ -202,6 +225,10 @@ Added to `tokenizer.py`:
 **Task token:**
 - `<random-3-bins>`
 
+**Correction markers:**
+- `<correction>`
+- `<non-correction>`
+
 **Distance bin tokens:**
 - `<bin_lt4>`
 - `<bin_4_12>`
@@ -222,7 +249,5 @@ Added to `tokenizer.py`:
 2. **Modify** `contactdoc/generators/__init__.py` — register new generator
 3. **Modify** `contactdoc/tokenizer.py` — add new tokens
 4. **Modify** `contactdoc/config.py` — add `Random3BinsConfig` dataclass
-5. **Create/modify** `contactdoc/contacts.py` — add `compute_all_pairs_binned()` function
-6. **Modify** `contactdoc/serialize.py` — add serialization for 5-tuple + pLDDT format (or handle in generator)
-7. **Create** `config/random_3_bins.yaml` — default config for this scheme
-8. **Create** `tests/test_random_3_bins.py` — tests
+5. **Create/modify** `contactdoc/contacts.py` — add helper functions
+6. **Create** `tests/test_random_3_bins.py` — tests

@@ -117,9 +117,11 @@ class Random3Bins(DocumentGenerator):
         eligible_residues = list(atom_cache.keys())
 
         # Step 3-4: budget calculation
+        # Overhead: task(1) + begin_seq(1) + residues + begin_contacts(1)
+        #           + end_contacts(1) + end(1) + plddt(1) = 6
         num_residues = len(parse_result.residues)
         fixed_overhead = 6 + num_residues
-        tokens_per_contact = 5
+        tokens_per_contact = 6  # correction marker + 5-tuple
         contact_budget = (r3b.max_tokens - fixed_overhead) // tokens_per_contact
 
         if contact_budget <= 0:
@@ -336,7 +338,14 @@ class Random3Bins(DocumentGenerator):
         global_plddt = sum(r.plddt for r in parse_result.residues) / len(parse_result.residues)
         plddt_token = _plddt_bin_token(global_plddt, r3b.plddt_bin_edges)
         n_entries = len(output_entries)
-        plddt_insert_pos = rng.randint(0, n_entries)
+
+        # 50% of documents: pLDDT at end (just before <end>)
+        # 50% of documents: pLDDT at random position in contacts section
+        plddt_at_end = rng.random() < 0.5
+        if plddt_at_end:
+            plddt_insert_pos = None  # handled specially in serializer
+        else:
+            plddt_insert_pos = rng.randint(0, n_entries)
 
         # Serialize
         doc_text = _serialize_random_3_bins(
@@ -344,6 +353,7 @@ class Random3Bins(DocumentGenerator):
             output_entries,
             plddt_token,
             plddt_insert_pos,
+            plddt_at_end,
             bin_edges,
             self.name,
         )
@@ -356,7 +366,8 @@ class Random3Bins(DocumentGenerator):
 
 
 def _serialize_random_3_bins(
-    residues, entries, plddt_token, plddt_pos, bin_edges, task_token,
+    residues, entries, plddt_token, plddt_pos, plddt_at_end,
+    bin_edges, task_token,
 ):
     """Serialize a random-3-bins document to text."""
     tokens = []
@@ -366,20 +377,36 @@ def _serialize_random_3_bins(
         tokens.append(f"<{r.name}>")
     tokens.append("<begin_contacts>")
 
+    seen_pairs: set[tuple[int, int]] = set()
+
     for idx, entry in enumerate(entries):
-        if idx == plddt_pos:
+        # Insert pLDDT token at this position (if not at end)
+        if not plddt_at_end and idx == plddt_pos:
             tokens.append(f"<{plddt_token}>")
+
+        pair = (entry.i, entry.j)
+        if pair in seen_pairs:
+            tokens.append("<correction>")
+        else:
+            tokens.append("<non-correction>")
+            seen_pairs.add(pair)
+
         tokens.append(f"<p{entry.i}>")
         tokens.append(f"<p{entry.j}>")
         tokens.append(f"<{entry.atom_i}>")
         tokens.append(f"<{entry.atom_j}>")
         tokens.append(f"<{_bin_token(entry.bin_idx, bin_edges)}>")
 
-    # If plddt_pos == len(entries), insert at end
-    if plddt_pos >= len(entries):
+    # Insert pLDDT at end of contacts section if not already placed
+    if not plddt_at_end and plddt_pos is not None and plddt_pos >= len(entries):
         tokens.append(f"<{plddt_token}>")
 
     tokens.append("<end_contacts>")
+
+    # pLDDT at end: just before <end>
+    if plddt_at_end:
+        tokens.append(f"<{plddt_token}>")
+
     tokens.append("<end>")
 
     return " ".join(tokens) + "\n"
