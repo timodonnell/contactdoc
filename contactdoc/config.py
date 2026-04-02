@@ -60,6 +60,21 @@ class Random3BinsConfig:
 
 
 @dataclass
+class ContactsAndDistancesV1Config:
+    max_tokens: int = 8192
+    contact_cutoff: float = 8.0  # CB-CB (CA for GLY) distance cutoff
+    contact_f_range: list = field(default_factory=lambda: [-0.1, 0.2])  # uniform range for f_long, f_medium, f_short
+    long_range_sep: int = 24  # min seq separation for long-range contacts
+    medium_range_sep: int = 12  # min seq separation for medium-range contacts
+    short_range_sep: int = 6  # min seq separation for short-range contacts
+    contact_rank_mean: float = 2.0  # mean of normal distribution for contact ranks
+    distance_rank_mean: float = 0.0  # mean of normal distribution for distance ranks
+    rank_std: float = 1.0  # std of normal distributions for ranks
+    residue_plddt_min: float = 70.0  # pLDDT filter for contact statements only
+    plddt_bin_edges: list = field(default_factory=lambda: [70, 75, 80, 85, 90, 95])
+
+
+@dataclass
 class PipelineConfig:
     afdb_version: int = 4
     bigquery_table: str = "bigquery-public-data.deepmind_alphafold.metadata"
@@ -71,6 +86,7 @@ class PipelineConfig:
     cluster_files: ClusterFilesConfig = field(default_factory=ClusterFilesConfig)
     parallelism: ParallelismConfig = field(default_factory=ParallelismConfig)
     random_3_bins: Random3BinsConfig = field(default_factory=Random3BinsConfig)
+    contacts_and_distances_v1: ContactsAndDistancesV1Config = field(default_factory=ContactsAndDistancesV1Config)
 
 
 def load_config(path: str | Path) -> PipelineConfig:
@@ -91,6 +107,7 @@ def _dict_to_config(d: dict) -> PipelineConfig:
         cluster_files=ClusterFilesConfig(**d.get("cluster_files", {})),
         parallelism=ParallelismConfig(**d.get("parallelism", {})),
         random_3_bins=Random3BinsConfig(**d.get("random_3_bins", {})),
+        contacts_and_distances_v1=ContactsAndDistancesV1Config(**d.get("contacts_and_distances_v1", {})),
     )
 
 

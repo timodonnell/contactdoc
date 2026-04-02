@@ -1,11 +1,13 @@
 """Document generator registry."""
 
 from .base import DocumentGenerator, GeneratorResult
+from .contacts_and_distances_v1 import ContactsAndDistancesV1
 from .deterministic_positives_only import DeterministicPositivesOnly
 from .random_3_bins import Random3Bins
 
 # Registry: scheme name -> generator class
 GENERATORS: dict[str, type[DocumentGenerator]] = {
+    "contacts-and-distances-v1": ContactsAndDistancesV1,
     "deterministic-positives-only": DeterministicPositivesOnly,
     "random-3-bins": Random3Bins,
 }

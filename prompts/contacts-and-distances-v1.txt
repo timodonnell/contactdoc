@@ -1,0 +1,61 @@
+
+In this description, concrete tokens are given as <token> and placeholders are given as [placeholder].
+
+Similar to earlier experiments, we have a prelude that looks like:
+
+<contacts-and-distances-v1>
+<begin_sequence>
+<MET> <LYS> <PHE> <CYS> <ASP> <TYR> <GLY> <LEU>
+<begin_statements>
+...
+<end>
+
+The main part of the document (... above) is a series of Statements, where each Statement is either a "contact statement" or a "distance".
+
+Distance statements are given as:
+
+<distance> [res1] [res2] [atom1] [atom2] [distance]
+
+Distance statements always give the correct binned distance between two pairs of atoms selected uniformly at random.
+
+Contact statements are given as:
+
+[contact-mode] [res1] [res2]
+
+Where [contact-mode] is one of:
+
+<long-range-contact> -- a long range contact defined as CB (CA for glycine) atoms <= 8 angstroms apart and seq separation >=24
+<medium-range-contact> -- same as <long-range-contact> except for sequence distances 12-24
+<short-range-contact> -- same as <long-range-contact> except for sequence distances 6-12
+
+Contact statements are only given for residue pairs where CB (CA for glycine) atoms are less than or equal to 8 angstroms apart.
+
+Document structure:
+Our token budget is 8192, but some of that is needed prefix with the amino acid sequence and so on. We fill up the remaining capacity as follows. We sample numbers f_long*, f_medium*, and f_short* from a uniform distribution between [-0.1, 0.2] and let f_long = max(0.0, f_long*), f_medium = max(0.0, f_medium*), f_short* = max(0.0, f_short*). 
+- We allocate f_long, f_medium, and f_short fraction of our budget equally into long (i.e. mode is <long-range-contact>), medium, and short contacts, respectively. If we run out of contacts for some subset that's ok.
+- The remaining tokens are filled with cases where where [mode] is <distance>
+- To determine the order, we assign each Statement a rank, where high ranks appear earlier in the document. Statements where [mode] is distance are assigned a rank r ~ N(0, 1), i.e. a rank from a standard normal distribution. Statements where [mode] is <long-range-contact>, <medium-range-contact>, or <short-range-contact> are assigned a rank r ~ N(2.0, 1), i.e. a normal distribution with a higher mean. Thus, the beginning of the document has most of the contact statements.
+
+Intentional errors: Not doing this. No more correction tokens, all statements given are correct.
+
+[distance] tokens
+We discretize distances at 0.5 angstrom resolution and have 41 distance tokens: <d0.5> (less than 0.5), d<1.0> (between 0.5 and 1.0), <d1.5> (between 1.0 and 1.5), through <d20.0> (between 19.5 and 20.0), plus d<gt20.0> (greater than 20).
+
+Clarifications:
+1. Variable statement sizes: Contact statements are 3 tokens ( ) but distance statements are 6 tokens ( <d4.5>). The budget calculation needs to handle this — we can't just divide remaining tokens by a fixed number. We need to decide how many distance statements we want, compute the token cost, then fill.
+	1. Answer: Let's say we draw numbers so that 10% of our budget will be used for long range contact statements respectively. Let's say we have a total budget of 7500 tokens after the sequence and placeholders are accounted for. We should allocate 10% of this for long range contacts, meaning that 75 tokens will be used for long range contacts. This means we can accommodate 75 / 3 = 25 long range contact statements. This is to say - we should do the budget in terms of tokens not statements. Does this answer the question?
+2. Distance statement atom selection: "atoms selected uniformly at random" — does this mean we pick one random atom from res1 and one from res2, compute the distance, and report it? So a single residue pair could appear multiple times with different atom pairs? Or should each distance statement be for a unique residue pair? I'm assuming the same pair can appear multiple times with different atoms.
+	1. Yes exactly: a single residue pair could appear multiple times. We sample residue pairs uniformly at random (so that there is not a bias toward bigger residues), then we sample atoms uniformly from within that residue. All sampling is done with replacement.
+3. Distance statement pair selection: How do we choose which residue pairs get distance statements? Uniformly from all eligible pairs (|i-j| > 1, both pLDDT ≥ 70)? Or weighted somehow?
+	1. Uniformly from all eligible pairs (|i-j| > 1. We do NOT set a pLDDT ≥ 70) requirement for distance pairs. However we DO set a pLDDT ≥ 70 for contact statements.
+4. Contact/distance overlap: A residue pair could appear both as a contact statement AND a distance statement (with randomly chosen atoms). Is that intentional? It seems fine — they provide complementary info.
+	1. Yes it is fine.
+5. The f_long/f_medium/f_short sampling: With uniform [-0.1, 0.2], each has P(0) = 1/3 (when sampled < 0) and expected value ≈ 0.067 when positive. So roughly 1/3 of documents have zero contacts of each type, and when present, they take up ~6.7% of the budget on average. The total expected contact fraction is ~3 × 0.067 = 20%, with the remaining 80% being distance statements. Is that the intended distribution?
+	1. Yes I think this is good.
+6. Sequence separation thresholds: You define long-range as sep ≥ 24, medium as 12-24, short as 6-12. What about contacts with sep < 6? Those are excluded entirely from contact statements. Is that intentional? (They could still appear as distance statements.)
+	1. Yeah let's exclude them from contact statements.
+7. pLDDT token: No pLDDT bin token in this scheme? Dropping it?
+	1. Good catch. Let's actually include it. Similar to other experiments we include a binned pLDDT token once in each document. With probability 50% this is placed at the very end of the statements, right before the <end> token. Otherwise, it is placed at a uniformly sampled random position in the statements block. It never breaks up statements though - it is always between statements never within.
+8. 42 distance tokens: Your description says 41 but I count 42: <d0.5> through <d20.0> is 40 tokens + <dgt20.0> = 41. Let me double-check: 0.5, 1.0, 1.5, ..., 20.0 = 40 values, plus gt20.0 = 41 total. That checks out.
+
+

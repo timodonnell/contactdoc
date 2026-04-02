@@ -21,6 +21,7 @@ CONTROL_TOKENS = ["<pad>", "<begin_sequence>", "<begin_contacts>", "<end_contact
 
 # Task tokens: one per document generation scheme, alphabetical
 TASK_TOKENS = sorted([
+    "contacts-and-distances-v1",
     "deterministic-positives-only",
     "random-3-bins",
 ])
@@ -65,6 +66,22 @@ PLDDT_BIN_TOKENS = sorted([
     "plddt_lt70",
 ])
 
+# Contact mode tokens for contacts-and-distances-v1
+CONTACT_MODE_TOKENS = sorted([
+    "distance",
+    "long-range-contact",
+    "medium-range-contact",
+    "short-range-contact",
+])
+
+# Begin statements token
+STATEMENT_TOKENS = sorted([
+    "begin_statements",
+])
+
+# Fine-grained distance tokens: d0.5, d1.0, ..., d32.0 (64 bins)
+FINE_DISTANCE_TOKENS = [f"d{v:.1f}" for v in [i * 0.5 for i in range(1, 65)]]
+
 MAX_POSITION = 2048
 
 _TOKEN_PATTERN = re.compile(r"<[^>]+>")
@@ -78,8 +95,11 @@ def build_vocab() -> tuple[dict[str, int], dict[int, str]]:
     tokens.extend(f"<{name}>" for name in RESIDUE_NAMES)
     tokens.extend(f"<{name}>" for name in ATOM_NAMES)
     tokens.extend(f"<{name}>" for name in CORRECTION_TOKENS)
+    tokens.extend(f"<{name}>" for name in CONTACT_MODE_TOKENS)
+    tokens.extend(f"<{name}>" for name in STATEMENT_TOKENS)
     tokens.extend(f"<{name}>" for name in DISTANCE_BIN_TOKENS)
     tokens.extend(f"<{name}>" for name in PLDDT_BIN_TOKENS)
+    tokens.extend(f"<{name}>" for name in FINE_DISTANCE_TOKENS)
     tokens.extend(f"<p{i}>" for i in range(1, MAX_POSITION + 1))
 
     token_to_id = {tok: i for i, tok in enumerate(tokens)}

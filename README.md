@@ -50,6 +50,26 @@ Example `random-3-bins` document:
 
 See [docs/random-3-bins-scheme.md](docs/random-3-bins-scheme.md) for the full specification.
 
+**`contacts-and-distances-v1`** — Two statement types: contact statements (3 tokens) and distance statements (6 tokens). Contact statements use CB-CB distance ≤ 8 Å with three modes based on sequence separation (`<long-range-contact>` ≥ 24, `<medium-range-contact>` 12–24, `<short-range-contact>` 6–12). Distance statements give fine-grained (0.5 Å resolution, 64 bins) distances between randomly sampled atom pairs. Contacts are rank-ordered to appear earlier in the document. No false contacts or corrections — all statements are correct.
+
+Example `contacts-and-distances-v1` document:
+
+```
+<contacts-and-distances-v1>
+<begin_sequence>
+<MET> <LYS> <PHE> <CYS> <ASP> <TYR> <GLY> <LEU>
+<begin_statements>
+<long-range-contact> <p1> <p50>
+<medium-range-contact> <p3> <p20>
+<distance> <p10> <p45> <CA> <CB> <d4.5>
+<short-range-contact> <p5> <p12>
+<distance> <p2> <p80> <NZ> <O> <d15.0>
+<plddt_80_85>
+<end>
+```
+
+See [prompts/contacts-and-distances-v1.txt](prompts/contacts-and-distances-v1.txt) for the full specification.
+
 Leakage-resistant train/val/test splits are enforced using precomputed sequence-similarity clusters (Foldseek AFDB50).
 
 The pipeline:
